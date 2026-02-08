@@ -33,7 +33,6 @@ exports.sendPushNotification = async (tokens, payload) => {
             notification: {
                 channelId: 'high_importance_channel',
                 priority: 'high',
-                clickAction: 'FLUTTER_NOTIFICATION_CLICK',
             },
             priority: 'high',
         },

@@ -49,24 +49,34 @@ export const useNotifications = () => {
                 notification.close();
             };
 
-            // Enhanced Notification Sound (Professional "Ding")
+            // Enhanced Notification Sound (Using your existing MP3)
             try {
-                // Using a reliable public URL for a "ding" sound
+                // Pointing to your specific file in the public folder
                 const audio = new Audio('/facebook_notification.mp3');
                 audio.volume = 0.8;
                 audio.play().catch(() => {
-                    // Fallback synthetic beep if external assets are blocked
+                    // Modern Synthetic Chime Fallback (if browser blocks audio)
                     try {
                         const context = new (window.AudioContext || window.webkitAudioContext)();
-                        const oscillator = context.createOscillator();
-                        const gain = context.createGain();
-                        oscillator.connect(gain);
-                        gain.connect(context.destination);
-                        oscillator.type = 'sine';
-                        oscillator.frequency.setValueAtTime(880, context.currentTime);
-                        gain.gain.setValueAtTime(0.1, context.currentTime);
-                        oscillator.start();
-                        oscillator.stop(context.currentTime + 0.1);
+                        const now = context.currentTime;
+
+                        const playPing = (freq, delay, volume) => {
+                            const osc = context.createOscillator();
+                            const g = context.createGain();
+                            osc.type = 'sine';
+                            osc.frequency.setValueAtTime(freq, now + delay);
+                            g.gain.setValueAtTime(0, now + delay);
+                            g.gain.linearRampToValueAtTime(volume, now + delay + 0.01);
+                            g.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.5);
+                            osc.connect(g);
+                            g.connect(context.destination);
+                            osc.start(now + delay);
+                            osc.stop(now + delay + 0.6);
+                        };
+
+                        // Play a pleasant "Ding-Ding"
+                        playPing(880, 0, 0.1);          // Note 1 (Bright)
+                        playPing(1318.51, 0.05, 0.07);  // Note 2 (Shimmer)
                     } catch (e) { }
                 });
             } catch (e) { }

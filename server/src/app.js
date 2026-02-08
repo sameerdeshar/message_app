@@ -8,6 +8,10 @@ const MySQLStore = require("express-mysql-session")(session);
 const pool = require("./config/database");
 const errorHandler = require("./middleware/errorHandler");
 const { setupSocketIO } = require("./utils/socket");
+const { initScheduledJobs } = require("./services/scheduler");
+
+// Initialize Scheduled Jobs (Cron)
+initScheduledJobs();
 
 // Import routes
 const authRoutes = require("./routes/authRoutes");

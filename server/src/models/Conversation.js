@@ -40,8 +40,8 @@ class Conversation {
     static async create({ sender_id, page_id, sender_name = 'Unknown', last_message = '', last_message_time = null }) {
         const [result] = await pool.query(
             `INSERT INTO conversations (sender_id, page_id, sender_name, last_message, last_message_time, created_at) 
-       VALUES (?, ?, ?, ?, COALESCE(?, NOW()), NOW())`,
-            [sender_id, page_id, sender_name, last_message, last_message_time]
+       VALUES (?, ?, ?, ?, COALESCE(?, ?), ?)`,
+            [sender_id, page_id, sender_name, last_message, last_message_time, new Date(), new Date()]
         );
         return await this.findById(result.insertId);
     }

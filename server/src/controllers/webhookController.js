@@ -120,7 +120,8 @@ async function processMessage(pageId, event, io) {
         imageUrl = attachments[0].payload.url;
     }
 
-    // Timestamp handling
+    // Timestamp handling with +5h 45m offset (Nepal Time)
+    // Timestamp handling - Use UTC
     let msgTimestamp = event.timestamp ? new Date(event.timestamp) : new Date();
     const tsVal = Number(event.timestamp);
     if (!isNaN(tsVal) && tsVal < 10000000000) {
@@ -161,37 +162,32 @@ async function processMessage(pageId, event, io) {
         const [rows] = await pool.query("SELECT id, user_name FROM conversations WHERE user_id = ? AND page_id = ?", [customerId, pageId]);
         const conversation = rows[0];
 
-        // Persistent Name Logic: Check 'customers' table first
+        // NEW: Ensure customers table exists and has this user (to prevent FK errors on notes)
+        // We do this BEFORE profile fetch so that if profile fetch fails, the record still exists.
+        await pool.query(`
+            INSERT INTO customers (id, name) VALUES (?, ?) 
+            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+        `, [customerId, conversation.user_name || 'Customer']);
+
+        // Persistent Name Logic: Check 'customers' table for existing rich info
         let currentUserName = conversation.user_name;
-
-        // Ensure customers table exists (Quick Fix)
-        try {
-            await pool.query(`
-                CREATE TABLE IF NOT EXISTS customers (
-                    id VARCHAR(255) PRIMARY KEY,
-                    name VARCHAR(255),
-                    profile_pic TEXT
-                )
-            `);
-        } catch (e) { }
-
         const [custRows] = await pool.query("SELECT name, profile_pic FROM customers WHERE id = ?", [customerId]);
-        if (custRows.length > 0) {
+        if (custRows.length > 0 && custRows[0].name !== 'Customer') {
             currentUserName = custRows[0].name;
         }
 
-        // If we still don't have a name, fetch from Facebook
-        if (!currentUserName && pageToken) {
+        // If we still don't have a rich name, fetch from Facebook
+        if ((!currentUserName || currentUserName === 'Customer') && pageToken) {
             try {
                 const profile = await facebookService.getUserProfile(pageToken, customerId);
                 if (profile) {
                     currentUserName = `${profile.first_name} ${profile.last_name}`;
-                    // Save to global customers registry
+                    // Update the customers registry with rich info
                     await pool.query(`
-                        INSERT INTO customers (id, name, profile_pic) 
-                        VALUES (?, ?, ?) 
-                        ON DUPLICATE KEY UPDATE name = VALUES(name), profile_pic = VALUES(profile_pic)
-                    `, [customerId, currentUserName, profile.profile_pic]);
+                        UPDATE customers 
+                        SET name = ?, profile_pic = ? 
+                        WHERE id = ?
+                    `, [currentUserName, profile.profile_pic, customerId]);
                 }
             } catch (profileErr) {
                 console.error("Failed to fetch user profile:", profileErr.message);
@@ -204,10 +200,12 @@ async function processMessage(pageId, event, io) {
         }
 
         // 3. Insert Message
+        console.log("🛠️ DB DEBUG: Attempting to save message via webhook (processMessage)...");
         const [res] = await pool.query(`
-            INSERT INTO messages (conversation_id, sender_id, recipient_id, text, image_url, is_from_page)
-            VALUES (?, ?, ?, ?, ?, ?)
-        `, [conversation.id, senderId, recipientId, text, imageUrl, isFromPage]);
+            INSERT INTO messages (conversation_id, sender_id, recipient_id, text, image_url, is_from_page, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [conversation.id, senderId, recipientId, text, imageUrl, isFromPage, msgTimestamp]);
+        console.log("✅ DB DEBUG: Successfully saved message via webhook, ID:", res.insertId);
 
         // 4. Real-time Broadcast
         const newMessage = {

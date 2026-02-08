@@ -95,8 +95,8 @@ class Message {
         const [result] = await pool.query(
             `INSERT INTO messages 
             (conversation_id, sender_id, recipient_id, text, image_url, is_from_page, timestamp) 
-            VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-            [conversation_id, sender_id, recipient_id, messageText, image_url, is_from_page]
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [conversation_id, sender_id, recipient_id, messageText, image_url, is_from_page, new Date()]
         );
 
         return await this.findById(result.insertId);
@@ -265,7 +265,7 @@ class Message {
      * @param {number} days - Archive messages older than this many days
      * @returns {Promise<number>} Number of messages archived
      */
-    static async archiveOldMessages(days = 90) {
+    static async archiveOldMessages(days = 7) {
         try {
             // This calls the stored procedure created in migration
             const [[result]] = await pool.query(

@@ -29,8 +29,8 @@ export const databaseApi = createApi({
 
         // Get table data with pagination
         getTableData: builder.query({
-            query: ({ tableName, page = 1, limit = 50 }) =>
-                `/database/tables/${tableName}/data?page=${page}&limit=${limit}`,
+            query: ({ tableName, page = 1, limit = 50, sortColumn, sortOrder = 'DESC' }) =>
+                `/database/tables/${tableName}/data?page=${page}&limit=${limit}&sortColumn=${sortColumn ?? ''}&sortOrder=${sortOrder}`,
             providesTags: (result, error, { tableName }) => [
                 { type: 'TableData', id: tableName }
             ],

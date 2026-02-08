@@ -38,8 +38,8 @@ class User {
      */
     static async create({ username, password_hash, role = 'agent' }) {
         const [result] = await pool.query(
-            'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-            [username, password_hash, role]
+            'INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)',
+            [username, password_hash, role, new Date()]
         );
         return await this.findById(result.insertId);
     }
@@ -113,8 +113,8 @@ class User {
      */
     static async assignPage(userId, pageId) {
         await pool.query(
-            'INSERT INTO user_pages (user_id, page_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_id = user_id',
-            [userId, pageId]
+            'INSERT INTO user_pages (user_id, page_id, assigned_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE user_id = user_id',
+            [userId, pageId, new Date()]
         );
         return true;
     }

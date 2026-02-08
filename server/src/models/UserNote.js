@@ -27,6 +27,12 @@ class UserNote {
      * @returns {Promise<Object>} Updated note
      */
     static async upsert({ customerId, content, last_edited_by }) {
+        // Defensive Check: Ensure the customer exists in the global registry to avoid FK failure
+        await pool.query(`
+            INSERT INTO customers (id, name) VALUES (?, ?) 
+            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+        `, [customerId, 'Customer']);
+
         await pool.query(
             `INSERT INTO user_notes (customer_id, content, last_edited_by) 
              VALUES (?, ?, ?) 

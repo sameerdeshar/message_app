@@ -16,12 +16,21 @@ export const messagesApi = createApi({
     }),
     tagTypes: ['Messages'],
     endpoints: (builder) => ({
-        // Get messages for a conversation
+        // Get messages for a conversation with pagination
         getMessages: builder.query({
-            query: (conversationId) => `/messages/${conversationId}`,
-            providesTags: (result, error, conversationId) => [
-                { type: 'Messages', id: conversationId }
-            ],
+            query: (arg) => {
+                const id = typeof arg === 'object' ? arg.conversationId : arg;
+                const limit = (typeof arg === 'object' && arg.limit) || 50;
+                const before = typeof arg === 'object' ? arg.before : undefined;
+                return {
+                    url: `/messages/${id}`,
+                    params: { limit, before }
+                };
+            },
+            providesTags: (result, error, arg) => {
+                const id = typeof arg === 'object' ? arg.conversationId : arg;
+                return [{ type: 'Messages', id }];
+            },
         }),
 
         // Send a message
@@ -31,10 +40,13 @@ export const messagesApi = createApi({
                 method: 'POST',
                 body: { conversationId, message, sender_id },
             }),
-            invalidatesTags: (result, error, { conversationId }) => [
-                { type: 'Messages', id: conversationId },
-                'Conversations' // Also update conversation list
-            ],
+            invalidatesTags: (result, error, arg) => {
+                const id = typeof arg === 'object' ? arg.conversationId : arg;
+                return [
+                    { type: 'Messages', id },
+                    'Conversations'
+                ];
+            },
         }),
 
         // Delete a message
@@ -52,9 +64,10 @@ export const messagesApi = createApi({
                 url: `/messages/${conversationId}/cleanup?period=${period}`,
                 method: 'DELETE',
             }),
-            invalidatesTags: (result, error, { conversationId }) => [
-                { type: 'Messages', id: conversationId }
-            ],
+            invalidatesTags: (result, error, arg) => {
+                const id = typeof arg === 'object' ? arg.conversationId : arg;
+                return [{ type: 'Messages', id }];
+            },
         }),
 
         // Delete latest message

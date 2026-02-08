@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     useGetTablesQuery,
     useGetTableSchemaQuery,
@@ -21,6 +21,8 @@ import {
     Download,
     ChevronLeft,
     ChevronRight,
+    ChevronUp,
+    ChevronDown,
     Code,
     X,
     Image as ImageIcon,
@@ -31,6 +33,8 @@ const DatabaseViewer = () => {
     const [selectedTable, setSelectedTable] = useState(null);
     const [viewMode, setViewMode] = useState('tables'); // 'tables' or 'media'
     const [page, setPage] = useState(1);
+    const [sortOrder, setSortOrder] = useState('DESC');
+    const [sortColumn, setSortColumn] = useState(null);
     const [showAddModal, setShowAddModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -47,8 +51,23 @@ const DatabaseViewer = () => {
     const { data: schemaData } = useGetTableSchemaQuery(selectedTable, {
         skip: !selectedTable || viewMode !== 'tables'
     });
+
+
+    // Effect to set initial sort column based on schema
+    useEffect(() => {
+        if (selectedTable && schemaData?.schema) {
+            // Find primary key
+            const pk = schemaData.schema.find(col => col.Key === 'PRI')?.Field;
+            if (pk) {
+                setSortColumn(pk);
+            } else {
+                setSortColumn(null); // No sorting for tables without PK
+            }
+        }
+    }, [selectedTable, schemaData]);
+
     const { data: tableData, isLoading: dataLoading } = useGetTableDataQuery(
-        { tableName: selectedTable, page, limit: 50 },
+        { tableName: selectedTable, page, limit: 50, sortColumn, sortOrder },
         { skip: !selectedTable || viewMode !== 'tables' }
     );
     const { data: mediaData, isLoading: mediaLoading } = useGetMediaQuery(undefined, {
@@ -107,7 +126,9 @@ const DatabaseViewer = () => {
         if (!editingRow) return;
 
         // Find ID column
-        const idKey = Object.keys(editingRow).find(k => k.toLowerCase() === 'id') || Object.keys(editingRow)[0];
+        const idKey = Object.keys(editingRow).find(k => k.toLowerCase() === 'id') ||
+            (schema.find(col => col.Key === 'PRI')?.Field) ||
+            Object.keys(editingRow)[0];
         const rowId = editingRow[idKey];
 
         // Prepare updates (exclude the primary key column itself from the SET clause)
@@ -133,7 +154,9 @@ const DatabaseViewer = () => {
         if (!deletingRow) return;
 
         // Find ID column (handle id or table_id or first column if none)
-        const idKey = Object.keys(deletingRow).find(k => k.toLowerCase() === 'id') || Object.keys(deletingRow)[0];
+        const idKey = Object.keys(deletingRow).find(k => k.toLowerCase() === 'id') ||
+            (schema.find(col => col.Key === 'PRI')?.Field) ||
+            Object.keys(deletingRow)[0];
         const rowId = deletingRow[idKey];
 
         try {
@@ -397,8 +420,27 @@ const DatabaseViewer = () => {
                                         <thead className="bg-gray-100 border-b-2 border-gray-200">
                                             <tr>
                                                 {Object.keys(rows[0]).map(key => (
-                                                    <th key={key} className="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
-                                                        {key}
+                                                    <th
+                                                        key={key}
+                                                        className={`px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors ${sortColumn === key ? 'text-blue-600' : ''
+                                                            }`}
+                                                        onClick={() => {
+                                                            if (sortColumn === key) {
+                                                                setSortOrder(prev => prev === 'ASC' ? 'DESC' : 'ASC');
+                                                            } else {
+                                                                setSortColumn(key);
+                                                                setSortOrder('DESC');
+                                                            }
+                                                        }}
+                                                    >
+                                                        <div className="flex items-center gap-1">
+                                                            {key}
+                                                            {sortColumn === key && (
+                                                                sortOrder === 'ASC'
+                                                                    ? <ChevronUp className="w-3 h-3" />
+                                                                    : <ChevronDown className="w-3 h-3" />
+                                                            )}
+                                                        </div>
                                                     </th>
                                                 ))}
                                                 <th className="px-4 py-3 text-center text-xs font-bold text-gray-600 uppercase tracking-wider">
@@ -539,7 +581,9 @@ const DatabaseViewer = () => {
                             <div className="grid grid-cols-2 gap-4">
                                 {Object.keys(formData).map(key => {
                                     // Determine if this is the ID column
-                                    const idKey = Object.keys(editingRow || {}).find(k => k.toLowerCase() === 'id') || Object.keys(editingRow || {})[0];
+                                    const idKey = Object.keys(editingRow || {}).find(k => k.toLowerCase() === 'id') ||
+                                        (schema.find(col => col.Key === 'PRI')?.Field) ||
+                                        Object.keys(editingRow || {})[0];
                                     const isIdCol = key === idKey;
 
                                     return (

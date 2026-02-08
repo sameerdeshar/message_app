@@ -14,6 +14,9 @@ const AgentDashboard = () => {
     const { user } = useSelector((state) => state.auth);
     const [selectedPageId, setSelectedPageId] = useState('all'); // 'all' for unified inbox
     const [selectedConversationId, setSelectedConversationId] = useState(null);
+    const [page, setPage] = useState(1);
+    const [allConversations, setAllConversations] = useState([]);
+    const [hasMore, setHasMore] = useState(true);
     const [logout] = useLogoutMutation();
     const navigate = useNavigate();
 
@@ -26,17 +29,49 @@ const AgentDashboard = () => {
 
     const pages = pagesData?.pages || [];
 
+    // Reset pagination when selectedPageId changes
+    useEffect(() => {
+        setPage(1);
+        setAllConversations([]);
+        setHasMore(true);
+    }, [selectedPageId]);
+
     // Fetch conversations based on selected page
-    const { data: conversationsData, isLoading: convLoading } = useGetConversationsQuery(
-        selectedPageId === 'all' ? 'all' : selectedPageId,
+    const { data: conversationsData, isLoading: convLoading, isFetching: convFetching } = useGetConversationsQuery(
+        { pageId: selectedPageId, page, limit: 30 },
         {
             skip: !selectedPageId
         }
     );
 
-    const conversations = Array.isArray(conversationsData)
-        ? conversationsData
-        : (conversationsData?.conversations || []);
+    useEffect(() => {
+        if (conversationsData) {
+            const newConversations = conversationsData.data || [];
+            const pagination = conversationsData.pagination;
+
+            if (page === 1) {
+                setAllConversations(newConversations);
+            } else {
+                setAllConversations(prev => {
+                    const existingIds = new Set(prev.map(c => c.id));
+                    const uniqueNew = newConversations.filter(c => !existingIds.has(c.id));
+                    return [...prev, ...uniqueNew];
+                });
+            }
+
+            if (pagination) {
+                setHasMore(pagination.hasMore);
+            } else {
+                setHasMore(newConversations.length === 30);
+            }
+        }
+    }, [conversationsData, page]);
+
+    const handleLoadMore = useCallback(() => {
+        if (!convFetching && hasMore) {
+            setPage(prev => prev + 1);
+        }
+    }, [convFetching, hasMore]);
 
     const { notificationsEnabled, requestPermission, showNotification, toggleNotifications } = useNotifications();
 
@@ -63,8 +98,8 @@ const AgentDashboard = () => {
 
     // Get conversation count by page
     const getPageConversationCount = (pageId) => {
-        if (!conversations) return 0;
-        return conversations.filter(c => c.page_id === pageId).length;
+        if (!allConversations) return 0;
+        return allConversations.filter(c => c.page_id === pageId).length;
     };
 
     return (
@@ -141,7 +176,7 @@ const AgentDashboard = () => {
                                 ? 'bg-white/20 text-white'
                                 : 'bg-blue-100 text-blue-600'
                                 }`}>
-                                {conversations.length}
+                                {allConversations.length}
                             </span>
                         </button>
 
@@ -178,16 +213,20 @@ const AgentDashboard = () => {
 
                 {/* Conversations Sidebar */}
                 <Sidebar
-                    conversations={conversations}
-                    isLoading={convLoading}
+                    conversations={allConversations}
+                    isLoading={convLoading && page === 1}
                     selectedId={selectedConversationId}
                     onSelect={setSelectedConversationId}
+                    onLoadMore={handleLoadMore}
+                    hasMore={hasMore}
+                    isFetchingMore={convFetching && page > 1}
                 />
 
                 {/* Chat Window */}
                 <ChatWindow
                     conversationId={selectedConversationId}
-                    conversationName={conversations.find(c => c.id === selectedConversationId)?.user_name}
+                    conversationName={allConversations.find(c => c.id === selectedConversationId)?.user_name}
+                    pageName={allConversations.find(c => c.id === selectedConversationId)?.page_name}
                 />
             </div>
         </div>

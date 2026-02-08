@@ -39,9 +39,9 @@ exports.listTables = async (req, res) => {
 const getPrimaryKey = async (tableName) => {
     try {
         const [rows] = await pool.query(`SHOW KEYS FROM \`${tableName}\` WHERE Key_name = 'PRIMARY'`);
-        return rows[0]?.Column_name || 'id'; // Fallback to 'id' if no PK found
+        return rows[0]?.Column_name || null; // Return null if no PK found
     } catch (err) {
-        return 'id';
+        return null;
     }
 };
 
@@ -83,13 +83,37 @@ exports.getTableData = async (req, res) => {
     const offset = (page - 1) * limit;
 
     try {
+        // Determine sort parameters
+        const pk = await getPrimaryKey(tableName);
+
+        // Use provided sort column, or PK, or nothing (null)
+        // Check for string "null" or "undefined" which might come from query params
+        let sortColumn = req.query.sortColumn;
+        if (sortColumn === 'null' || sortColumn === 'undefined' || !sortColumn) {
+            sortColumn = pk;
+        }
+
+        const sortOrder = (req.query.sortOrder || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
         // Get total count
         const [countResult] = await pool.query(`SELECT COUNT(*) as total FROM \`${tableName}\``);
         const total = countResult[0].total;
         const totalPages = Math.ceil(total / limit);
 
-        // Get paginated data
-        const [rows] = await pool.query(`SELECT * FROM \`${tableName}\` LIMIT ? OFFSET ?`, [limit, offset]);
+        // Get paginated data with sorting
+        let query;
+        let queryParams;
+
+        if (sortColumn) {
+            query = `SELECT * FROM ?? ORDER BY ?? ${sortOrder} LIMIT ? OFFSET ?`;
+            queryParams = [tableName, sortColumn, limit, offset];
+        } else {
+            // No sorting if no sort column (id or otherwise) is available
+            query = `SELECT * FROM ?? LIMIT ? OFFSET ?`;
+            queryParams = [tableName, limit, offset];
+        }
+
+        const [rows] = await pool.query(query, queryParams);
 
         res.json({
             data: rows,

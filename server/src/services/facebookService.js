@@ -2,15 +2,19 @@ const axios = require("axios");
 
 const GRAPH_API_URL = process.env.GRAPH_API_URL || "https://graph.facebook.com/v22.0";
 
-exports.sendMessage = async (pageAccessToken, recipientId, text) => {
+exports.sendMessage = async (pageAccessToken, recipientId, text, options = {}) => {
+    const { messaging_type = "RESPONSE", tag = null } = options;
     try {
+        const data = {
+            messaging_type: messaging_type,
+            recipient: { id: recipientId },
+            message: { text: text }
+        };
+        if (tag) data.tag = tag;
+
         const response = await axios.post(
             `${GRAPH_API_URL}/me/messages`,
-            {
-                messaging_type: "RESPONSE",
-                recipient: { id: recipientId },
-                message: { text: text }
-            },
+            data,
             {
                 params: { access_token: pageAccessToken }
             }
@@ -18,27 +22,31 @@ exports.sendMessage = async (pageAccessToken, recipientId, text) => {
         return response.data;
     } catch (err) {
         console.error("FB Send Error:", err.response?.data || err.message);
-        throw new Error("Failed to send message to Facebook");
+        throw err; // Throw the original error object for better error handling in controller
     }
 };
 
-exports.sendImageMessage = async (pageAccessToken, recipientId, imageUrl) => {
+exports.sendImageMessage = async (pageAccessToken, recipientId, imageUrl, options = {}) => {
+    const { messaging_type = "RESPONSE", tag = null } = options;
     try {
-        const response = await axios.post(
-            `${GRAPH_API_URL}/me/messages`,
-            {
-                messaging_type: "RESPONSE",
-                recipient: { id: recipientId },
-                message: {
-                    attachment: {
-                        type: "image",
-                        payload: {
-                            url: imageUrl,
-                            is_reusable: true
-                        }
+        const data = {
+            messaging_type: messaging_type,
+            recipient: { id: recipientId },
+            message: {
+                attachment: {
+                    type: "image",
+                    payload: {
+                        url: imageUrl,
+                        is_reusable: true
                     }
                 }
-            },
+            }
+        };
+        if (tag) data.tag = tag;
+
+        const response = await axios.post(
+            `${GRAPH_API_URL}/me/messages`,
+            data,
             {
                 params: { access_token: pageAccessToken }
             }
@@ -46,7 +54,7 @@ exports.sendImageMessage = async (pageAccessToken, recipientId, imageUrl) => {
         return response.data;
     } catch (err) {
         console.error("FB Image Send Error:", err.response?.data || err.message);
-        throw new Error("Failed to send image to Facebook");
+        throw err; // Throw the original error object
     }
 };
 

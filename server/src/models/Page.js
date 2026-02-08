@@ -39,9 +39,9 @@ class Page {
     static async create({ page_id, page_name, access_token }) {
         const [result] = await pool.query(
             `INSERT INTO pages (page_id, page_name, access_token, created_at) 
-       VALUES (?, ?, ?, NOW())
+       VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE page_name = VALUES(page_name), access_token = VALUES(access_token)`,
-            [page_id, page_name, access_token]
+            [page_id, page_name, access_token, new Date()]
         );
 
         // Return the newly created or updated page

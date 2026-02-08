@@ -34,9 +34,13 @@ exports.getMyPages = async (req, res) => {
     }
 };
 
-// GET /api/messages/conversations?pageId=123 (Filtered)
+// GET /api/messages/conversations?pageId=123&page=1&limit=30 (Filtered)
 exports.listConversations = async (req, res) => {
     const pageId = req.query.pageId;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
+
     if (!pageId) return res.status(400).json({ error: "pageId required" });
 
     if (pageId === 'all') {
@@ -45,16 +49,37 @@ exports.listConversations = async (req, res) => {
 
     try {
         const query = `
-            SELECT c.*, MAX(m.timestamp) as latest_msg_time, 
+            SELECT c.*, p.name as page_name, MAX(m.timestamp) as latest_msg_time, 
                    (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY timestamp DESC LIMIT 1) as latest_msg_text
             FROM conversations c
+            JOIN pages p ON c.page_id = p.id
             LEFT JOIN messages m ON c.id = m.conversation_id
             WHERE c.page_id = ?
             GROUP BY c.id
             ORDER BY latest_msg_time DESC
+            LIMIT ? OFFSET ?
         `;
-        const [conversations] = await pool.query(query, [pageId]);
-        res.json(conversations);
+
+        const [conversations] = await pool.query(query, [pageId, limit, offset]);
+
+        // Get total count for pagination metadata
+        // Note: Counting distinct conversations for this page
+        const [countResult] = await pool.query(
+            "SELECT COUNT(*) as total FROM conversations WHERE page_id = ?",
+            [pageId]
+        );
+
+        const total = countResult[0].total;
+
+        res.json({
+            data: conversations,
+            pagination: {
+                page,
+                limit,
+                total,
+                hasMore: (offset + conversations.length) < total
+            }
+        });
     } catch (err) {
         console.error("listConversations Error:", err);
         res.status(500).json({ error: "Database error" });
@@ -76,26 +101,69 @@ exports.deleteMessage = async (req, res) => {
 
 // GET /api/messages/all_conversations (Unified Inbox)
 exports.getAllConversations = async (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
+
     try {
-        let query = `
-            SELECT c.*, p.name as page_name, MAX(m.timestamp) as latest_msg_time, 
-                   (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY timestamp DESC LIMIT 1) as latest_msg_text
+        let baseQuery = `
             FROM conversations c
             JOIN pages p ON c.page_id = p.id
             LEFT JOIN messages m ON c.id = m.conversation_id
         `;
+
         const params = [];
 
         // If Agent, restrict to assigned pages
         if (req.session.role !== 'admin') {
-            query += ` JOIN user_pages up ON p.id = up.page_id WHERE up.user_id = ? `;
+            baseQuery += ` JOIN user_pages up ON p.id = up.page_id WHERE up.user_id = ? `;
             params.push(req.session.userId);
         }
 
-        query += ` GROUP BY c.id ORDER BY latest_msg_time DESC`;
+        const dataQuery = `
+            SELECT c.*, p.name as page_name, MAX(m.timestamp) as latest_msg_time, 
+                   (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY timestamp DESC LIMIT 1) as latest_msg_text
+            ${baseQuery}
+            GROUP BY c.id 
+            ORDER BY latest_msg_time DESC
+            LIMIT ? OFFSET ?
+        `;
 
-        const [conversations] = await pool.query(query, params);
-        res.json(conversations);
+        const [conversations] = await pool.query(dataQuery, [...params, limit, offset]);
+
+        // Count Query needs to be a bit smarter because of the GROUP BY in the main query
+        // The main query groups by conversation ID. So we count distinct conversation IDs matching the criteria.
+
+        let countQuery = "";
+        let countParams = [];
+
+        if (req.session.role !== 'admin') {
+            // Re-construct for count to avoid complex subqueries if possible, or just use simpler valid count
+            // actually, counting distinct c.id is correct.
+            countQuery = `
+                SELECT COUNT(DISTINCT c.id) as total
+                FROM conversations c
+                JOIN pages p ON c.page_id = p.id
+                JOIN user_pages up ON p.id = up.page_id 
+                WHERE up.user_id = ?
+             `;
+            countParams = [req.session.userId];
+        } else {
+            countQuery = `SELECT COUNT(*) as total FROM conversations`;
+        }
+
+        const [countResult] = await pool.query(countQuery, countParams);
+        const total = countResult[0].total;
+
+        res.json({
+            data: conversations,
+            pagination: {
+                page,
+                limit,
+                total,
+                hasMore: (offset + conversations.length) < total
+            }
+        });
     } catch (err) {
         console.error("getAllConversations Error:", err);
         res.status(500).json({ error: "Database error" });
@@ -109,8 +177,13 @@ exports.getMessages = async (req, res) => {
     const { limit = 50, before, after } = req.query;
 
     try {
-        // Fetch conversation to get pageId
-        const [convs] = await pool.query("SELECT page_id FROM conversations WHERE id = ?", [conversationId]);
+        // Fetch conversation details (including user_id for notes and page name)
+        const [convs] = await pool.query(`
+            SELECT c.*, p.name as page_name 
+            FROM conversations c 
+            JOIN pages p ON c.page_id = p.id 
+            WHERE c.id = ?
+        `, [conversationId]);
         if (convs.length === 0) return res.status(404).json({ error: "Conversation not found" });
 
         const pageId = convs[0].page_id;
@@ -141,6 +214,22 @@ exports.getMessages = async (req, res) => {
 
         const [messages] = await pool.query(query, params);
 
+        // Fetch agent names for messages from page
+        if (messages.length > 0) {
+            const agentIds = [...new Set(messages.filter(m => m.is_from_page && m.agent_id).map(m => m.agent_id))];
+            if (agentIds.length > 0) {
+                const [agents] = await pool.query("SELECT id, username FROM users WHERE id IN (?)", [agentIds]);
+                const agentMap = {};
+                agents.forEach(a => agentMap[a.id] = a.username);
+
+                messages.forEach(m => {
+                    if (m.agent_id && agentMap[m.agent_id]) {
+                        m.agent_name = agentMap[m.agent_id];
+                    }
+                });
+            }
+        }
+
         // Get total count for pagination metadata
         const [countResult] = await pool.query(
             "SELECT COUNT(*) as total FROM messages WHERE conversation_id = ? AND is_deleted = FALSE",
@@ -151,6 +240,7 @@ exports.getMessages = async (req, res) => {
         const messagesOrdered = after ? messages : messages.reverse();
 
         res.json({
+            conversation: convs[0], // Include conversation metadata (user_id, etc.)
             messages: messagesOrdered,
             pagination: {
                 total: countResult[0].total,
@@ -197,22 +287,6 @@ exports.replyToMessage = async (req, res) => {
             await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_deleted TINYINT DEFAULT 0");
         } catch (e) { /* ignore if exists */ }
 
-        // ✅ REMOVE client_message_id from query
-        const query = "INSERT INTO messages (conversation_id, sender_id, recipient_id, text, image_url, is_from_page) VALUES (?, ?, ?, ?, ?, 1)";
-        const [result] = await pool.query(query, [conversationId, senderId, recipientId, message || '', imageUrl || null]);
-
-        const newMessage = {
-            id: result.insertId,
-            conversation_id: conversationId,
-            sender_id: senderId,
-            recipient_id: recipientId,
-            text: message || '',
-            image_url: imageUrl || null,
-            timestamp: new Date(), // Approximate for UI response, DB already used DEFAULT
-            is_from_page: 1,
-            is_deleted: 0
-        };
-
         // Get Page Token for sending to Facebook
         const [pages] = await pool.query("SELECT access_token FROM pages WHERE id = ?", [conv.page_id]);
         if (pages.length === 0) return res.status(500).json({ error: "Page token missing" });
@@ -233,17 +307,74 @@ exports.replyToMessage = async (req, res) => {
                     console.log("🔗 Sending Attachment to Meta (Reply):", metaImageUrl);
                 }
 
-                await facebookService.sendImageMessage(pageToken, recipientId, metaImageUrl);
+                try {
+                    await facebookService.sendImageMessage(pageToken, recipientId, metaImageUrl);
+                } catch (fbErr) {
+                    // Retry with HUMAN_AGENT tag if it's a window error (Code 10)
+                    if (fbErr.response?.data?.error?.code === 10) {
+                        console.log("🔄 Retrying Image with HUMAN_AGENT tag...");
+                        await facebookService.sendImageMessage(pageToken, recipientId, metaImageUrl, {
+                            messaging_type: "MESSAGE_TAG",
+                            tag: "HUMAN_AGENT"
+                        });
+                    } else {
+                        throw fbErr;
+                    }
+                }
             } else {
-                await facebookService.sendMessage(pageToken, recipientId, message);
+                try {
+                    await facebookService.sendMessage(pageToken, recipientId, message);
+                } catch (fbErr) {
+                    // Retry with HUMAN_AGENT tag if it's a window error (Code 10)
+                    if (fbErr.response?.data?.error?.code === 10) {
+                        console.log("🔄 Retrying Message with HUMAN_AGENT tag...");
+                        await facebookService.sendMessage(pageToken, recipientId, message, {
+                            messaging_type: "MESSAGE_TAG",
+                            tag: "HUMAN_AGENT"
+                        });
+                    } else {
+                        throw fbErr;
+                    }
+                }
             }
         } catch (fbErr) {
-            console.error("❌ Meta API Error (Reply Failed):", fbErr.response?.data || fbErr.message);
+            const fbErrorData = fbErr.response?.data?.error || {};
+            console.error("❌ Meta API Error (Reply Failed):", fbErrorData.message || fbErr.message);
+
+            let errorMessage = "Failed to send message to Meta";
+            if (fbErrorData.code === 10) {
+                errorMessage = "Message window closed. You can only respond up to 7 days after the last customer message.";
+            } else if (fbErrorData.code === 100 && fbErrorData.error_subcode === 2018276) {
+                errorMessage = "HUMAN_AGENT approval missing. Please enable 'Human Agent' feature in your Meta App Dashboard.";
+            }
+
             return res.status(502).json({
-                error: "Failed to send message to Meta",
-                details: fbErr.response?.data?.error?.message || fbErr.message
+                error: errorMessage,
+                details: fbErrorData.message || fbErr.message,
+                fbCode: fbErrorData.code,
+                fbSubcode: fbErrorData.error_subcode
             });
         }
+
+        // ✅ ONLY SAVE TO DB IF SEND SUCCEEDED
+        console.log("🛠️ DB DEBUG: Attempting to save message via replyToMessage...");
+        const timestamp = new Date();
+        const query = "INSERT INTO messages (conversation_id, sender_id, recipient_id, text, image_url, is_from_page, timestamp, agent_id) VALUES (?, ?, ?, ?, ?, 1, ?, ?)";
+        const [result] = await pool.query(query, [conversationId, conv.page_id, conv.user_id, message || '', imageUrl || null, timestamp, req.session.userId]);
+        console.log("✅ DB DEBUG: Successfully saved message via replyToMessage, ID:", result.insertId);
+
+        const newMessage = {
+            id: result.insertId,
+            conversation_id: conversationId,
+            sender_id: conv.page_id,
+            recipient_id: conv.user_id,
+            text: message || '',
+            image_url: imageUrl || null,
+            timestamp: timestamp,
+            is_from_page: 1,
+            is_deleted: 0,
+            agent_id: req.session.userId
+        };
 
         // NOTE: We don't broadcast here because Facebook will echo the message back
         // via webhook, but we now ignore echoes, so the frontend adds it immediately
@@ -342,11 +473,13 @@ exports.deleteOlderMessages = async (req, res) => {
 
     let days;
     switch (period) {
+        case '1d': days = 1; break;
+        case '2d': days = 2; break;
         case '7d': days = 7; break;
         case '15d': days = 15; break;
-        case '1m': days = 30; break;
-        case '3m': days = 90; break;
-        default: return res.status(400).json({ error: "Invalid period. Use 7d, 15d, 1m, or 3m." });
+        case '1m': days = 30; break; // Keep for backward compat
+        case '3m': days = 90; break; // Keep for backward compat
+        default: return res.status(400).json({ error: "Invalid period. Use 1d, 2d, 7d, 15d." });
     }
 
     try {
@@ -469,24 +602,48 @@ exports.uploadImage = async (req, res) => {
         const pageToken = pages[0].access_token;
 
         // 2. Send to Facebook API first
-        // Note: If you are on localhost, Facebook won't be able to fetch this URL!
-        // You MUST use ngrok or Cloudflare Tunnel for this to work in dev.
         try {
-            await facebookService.sendImageMessage(pageToken, conv.user_id, fullImageUrl);
+            try {
+                await facebookService.sendImageMessage(pageToken, conv.user_id, fullImageUrl);
+            } catch (fbErr) {
+                // Retry with HUMAN_AGENT tag if it's a window error (Code 10)
+                if (fbErr.response?.data?.error?.code === 10) {
+                    console.log("🔄 Retrying Image Upload with HUMAN_AGENT tag...");
+                    await facebookService.sendImageMessage(pageToken, conv.user_id, fullImageUrl, {
+                        messaging_type: "MESSAGE_TAG",
+                        tag: "HUMAN_AGENT"
+                    });
+                } else {
+                    throw fbErr;
+                }
+            }
         } catch (fbErr) {
-            console.error("❌ Meta API Error (Image Send Failed):", fbErr.response?.data || fbErr.message);
+            const fbErrorData = fbErr.response?.data?.error || {};
+            console.error("❌ Meta API Error (Image Send Failed):", fbErrorData.message || fbErr.message);
+
+            let errorMessage = "Failed to send image to Meta (Facebook)";
+            if (fbErrorData.code === 10) {
+                errorMessage = "Message window closed. You can only respond up to 7 days after the last customer message.";
+            } else if (fbErrorData.code === 100 && fbErrorData.error_subcode === 2018276) {
+                errorMessage = "HUMAN_AGENT approval missing. Please enable 'Human Agent' feature in your Meta App Dashboard.";
+            }
+
             return res.status(502).json({
-                error: "Failed to send image to Meta (Facebook)",
-                details: fbErr.response?.data?.error?.message || fbErr.message,
-                suggest: "Ensure your server is publicly accessible via HTTPS (e.g., ngrok) so Meta can fetch the image."
+                error: errorMessage,
+                details: fbErrorData.message || fbErr.message,
+                suggest: fbErrorData.code === 10 ? "Customers must interact within the last 7 days." : "Ensure your server is publicly accessible via HTTPS (e.g., ngrok) so Meta can fetch the image.",
+                fbCode: fbErrorData.code
             });
         }
 
-        // 3. Store in database (Messages)
+        // 3. Store in database (Messages) - ✅ ONLY ON SUCCESS
+        console.log("🛠️ DB DEBUG: Attempting to save message via uploadImage...");
+        const timestamp = new Date();
         const [result] = await pool.query(
-            "INSERT INTO messages (conversation_id, sender_id, recipient_id, text, image_url, is_from_page) VALUES (?, ?, ?, ?, ?, ?)",
-            [conversationId, conv.page_id, conv.user_id, message || '', imageUrl, true]
+            "INSERT INTO messages (conversation_id, sender_id, recipient_id, text, image_url, is_from_page, timestamp, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [conversationId, conv.page_id, conv.user_id, message || '', imageUrl, true, timestamp, req.session.userId]
         );
+        console.log("✅ DB DEBUG: Successfully saved message via uploadImage, ID:", result.insertId);
 
         // 3b. Store in database (Media Library Tracking)
         try {
@@ -513,7 +670,9 @@ exports.uploadImage = async (req, res) => {
                 text: message || '',
                 image_url: imageUrl,
                 is_from_page: true,
-                timestamp: new Date() // Hint for UI, DB uses server time
+                timestamp: timestamp,
+                agent_id: req.session.userId,
+                agent_name: req.session.username // Assuming username is in session, if not we can just store ID and let next fetch get it
             }
         });
     } catch (err) {

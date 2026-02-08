@@ -12,6 +12,9 @@ const AdminInbox = () => {
     const { pageId } = useParams();
     const navigate = useNavigate();
     const [selectedConversationId, setSelectedConversationId] = useState(null);
+    const [page, setPage] = useState(1);
+    const [allConversations, setAllConversations] = useState([]);
+    const [hasMore, setHasMore] = useState(true);
 
     useSocket(); // Enable real-time updates
     const { showNotification } = useNotifications();
@@ -21,14 +24,56 @@ const AdminInbox = () => {
         const handleNewMessage = (e) => {
             const data = e.detail;
             if (!data) return;
+
+            // Show notification
             showNotification('New Message', `Message from ${data.user_name || data.sender_name || 'Customer'}`);
+
+            // Optional: Update list locally if needed (Socket usually handles real-time via invalidation or separate event)
+            // But since we are managing local state for pagination, we might need to prepend manually if not using tags invalidation
+            // For now, let's rely on refresh or simple effect if the query auto-updates
         };
         window.addEventListener('new-message', handleNewMessage);
         return () => window.removeEventListener('new-message', handleNewMessage);
     }, [showNotification]);
 
-    const { data, isLoading } = useGetConversationsQuery(pageId);
-    const conversations = Array.isArray(data) ? data : (data?.conversations || []);
+    // Reset pagination when pageId changes
+    useEffect(() => {
+        setPage(1);
+        setAllConversations([]);
+        setHasMore(true);
+    }, [pageId]);
+
+    const { data, isLoading, isFetching } = useGetConversationsQuery({ pageId, page, limit: 30 });
+
+    useEffect(() => {
+        if (data) {
+            const newConversations = data.data || []; // Handle new format
+            const pagination = data.pagination;
+
+            if (page === 1) {
+                setAllConversations(newConversations);
+            } else {
+                // Append only if we haven't already (simple check to avoid dupes from strict mode re-renders)
+                setAllConversations(prev => {
+                    const existingIds = new Set(prev.map(c => c.id));
+                    const uniqueNew = newConversations.filter(c => !existingIds.has(c.id));
+                    return [...prev, ...uniqueNew];
+                });
+            }
+
+            if (pagination) {
+                setHasMore(pagination.hasMore);
+            } else {
+                setHasMore(newConversations.length === 30); // Fallback
+            }
+        }
+    }, [data, page]);
+
+    const handleLoadMore = () => {
+        if (!isFetching && hasMore) {
+            setPage(prev => prev + 1);
+        }
+    };
 
     return (
         <div className="flex h-screen flex-col">
@@ -53,14 +98,18 @@ const AdminInbox = () => {
 
             <div className="flex flex-1 overflow-hidden">
                 <Sidebar
-                    conversations={conversations}
-                    isLoading={isLoading}
+                    conversations={allConversations}
+                    isLoading={isLoading && page === 1}
                     selectedId={selectedConversationId}
                     onSelect={setSelectedConversationId}
+                    onLoadMore={handleLoadMore}
+                    hasMore={hasMore}
+                    isFetchingMore={isFetching && page > 1}
                 />
                 <ChatWindow
                     conversationId={selectedConversationId}
-                    conversationName={conversations.find(c => c.id === selectedConversationId)?.user_name}
+                    conversationName={allConversations.find(c => c.id === selectedConversationId)?.user_name}
+                    pageName={allConversations.find(c => c.id === selectedConversationId)?.page_name}
                 />
             </div>
         </div>

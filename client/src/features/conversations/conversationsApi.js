@@ -18,15 +18,33 @@ export const conversationsApi = createApi({
     endpoints: (builder) => ({
         // Get conversations for a specific page
         getConversations: builder.query({
-            query: (pageId) => {
-                if (pageId) {
-                    return `/messages/conversations?pageId=${pageId}`;
+            query: (arg) => {
+                let pageId, page = 1, limit = 30;
+
+                if (typeof arg === 'object') {
+                    pageId = arg.pageId;
+                    page = arg.page || 1;
+                    limit = arg.limit || 30;
+                } else {
+                    pageId = arg;
                 }
-                return '/messages/all_conversations';
+
+                const params = new URLSearchParams({
+                    page: page.toString(),
+                    limit: limit.toString()
+                });
+
+                if (pageId && pageId !== 'all') {
+                    params.append('pageId', pageId);
+                    return `/messages/conversations?${params.toString()}`;
+                }
+
+                return `/messages/all_conversations?${params.toString()}`;
             },
-            providesTags: (result, error, pageId) => [
-                { type: 'Conversations', id: pageId ? `PAGE-${pageId}` : 'ALL' }
-            ],
+            providesTags: (result, error, arg) => {
+                const pageId = typeof arg === 'object' ? arg.pageId : arg;
+                return [{ type: 'Conversations', id: pageId ? `PAGE-${pageId}` : 'ALL' }];
+            },
         }),
 
         // Get single conversation
